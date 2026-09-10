@@ -1,0 +1,18 @@
+[package]
+name = "mcpc"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lloyd Zhou <lloydzhou@gmail.com>"]
+license = "MIT"
+description = "MCP client CLI with daemon-held sessions"
+repository = "https://github.com/lloydzhou/mcpc"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+ureq = "2.10"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
