@@ -196,6 +196,8 @@ for _ in $(seq 1 50); do
 done
 HTTPD_PID=$(cat "$WEB/httpd.pid" 2>/dev/null || echo "")
 sleep 1
+echo "--- proxy env ---"
+env | grep -i proxy || echo "(none)"
 
 assert_eq "http-connect" "$($MCPC connect http://127.0.0.1:$PORT/cgi-bin/mcp.cgi @web 2>&1)" "connected @web"
 assert_eq "http-call" "$($MCPC @web tools-call web_search q=hello 2>&1)" '{"content":[{"type":"text","text":"web-result"}]}'
