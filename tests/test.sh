@@ -190,12 +190,15 @@ cp tests/http_cgi_mcp500.cgi "$WEB/cgi-bin/mcp500.cgi"
 cp tests/http_cgi_mcpsse.cgi "$WEB/cgi-bin/mcpsse.cgi"
 chmod +x "$WEB/cgi-bin/"*
 python3 tests/http_server.py "$WEB" "$PORT" --daemon
-for _ in $(seq 1 50); do
-    [ -f "$WEB/httpd.pid" ] && break
+for _ in $(seq 1 2400); do
+    [ -f "$WEB/ready" ] && break
     sleep 0.05
 done
+if [ ! -f "$WEB/ready" ]; then
+    echo "FAIL: http test server did not start"
+    exit 1
+fi
 HTTPD_PID=$(cat "$WEB/httpd.pid" 2>/dev/null || echo "")
-sleep 1
 echo "--- proxy env ---"
 env | grep -i proxy || echo "(none)"
 

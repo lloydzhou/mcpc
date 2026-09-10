@@ -116,4 +116,6 @@ with open(PIDFILE, "w") as f:
 
 port = int(sys.argv[2])
 server = HTTPServer(("127.0.0.1", port), Handler)
+with open(os.path.join(WEB, "ready"), "w") as f:
+    f.write("ok\n")
 server.serve_forever()
