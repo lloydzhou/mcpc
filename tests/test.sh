@@ -120,12 +120,12 @@ done
 ''')
 PY
 chmod +x tests/echo-big.tmp.sh
-assert_eq "big-list" "$($MCPC connect cmd:"$PWD"/tests/echo-big.tmp.sh @big 2>&1 && $MCPC @big tools-list 2>&1 | wc -c)" "connected @big
-   20026"
+assert_eq "big-list" "$($MCPC connect cmd:"$PWD"/tests/echo-big.tmp.sh @big 2>&1 && $MCPC @big tools-list 2>&1 | wc -c | tr -d ' ')" "connected @big
+20026"
 
 # cache delete fallback
 rm -f "$BA_HOME/mcpc/servers/big.json"
-assert_eq "fallback" "$($MCPC @big tools-list 2>&1 | wc -c)" "   20026"
+assert_eq "fallback" "$($MCPC @big tools-list 2>&1 | wc -c | tr -d ' ')" "20026"
 
 # dead session drops out of ls
 cat > tests/echo-die.tmp.sh <<'DIE'
