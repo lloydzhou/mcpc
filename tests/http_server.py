@@ -63,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
                 input=body,
                 capture_output=True,
                 env=env,
-                timeout=10,
+                timeout=60,
             )
         except Exception as e:
             self.send_error(500, str(e))
@@ -102,6 +102,15 @@ class Handler(BaseHTTPRequestHandler):
 
 os.makedirs(os.path.join(WEB, "cgi-bin"), exist_ok=True)
 open(LOG, "w").close()
+
+# warm up a python subprocess once: the first exec of the interpreter on a
+# fresh CI runner can take far longer than a request timeout (gatekeeper /
+# first-launch overhead), which would otherwise stall the first CGI call.
+try:
+    subprocess.run([sys.executable, "-c", "pass"], timeout=120)
+except Exception:
+    pass
+
 with open(PIDFILE, "w") as f:
     f.write(str(os.getpid()))
 
