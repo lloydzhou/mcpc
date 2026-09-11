@@ -1,0 +1,22 @@
+name: AUR Verify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  makepkg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify PKGBUILD in Arch container
+        run: |
+          docker run --rm -v "$PWD/packaging/aur:/src:ro" archlinux:base-devel bash -c '
+            set -e
+            pacman -Syu --noconfirm git rust >/dev/null 2>&1
+            mkdir -p /tmp/p && chmod 777 /tmp/p && cp /src/PKGBUILD /tmp/p/ && cd /tmp/p
+            setpriv --reuid=1000 --regid=1000 --clear-groups makepkg -s --noconfirm --nosign
+            echo "=== package contents ==="
+            bsdtar -tf /tmp/p/*.pkg.tar.zst
+          '
