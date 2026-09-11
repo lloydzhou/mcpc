@@ -16,7 +16,7 @@ jobs:
             set -e
             pacman -Syu --noconfirm git rust >/dev/null 2>&1
             mkdir -p /tmp/p && chmod 777 /tmp/p && cp /src/PKGBUILD /tmp/p/ && cd /tmp/p
-            setpriv --reuid=1000 --regid=1000 --clear-groups makepkg -s --noconfirm --nosign
+            setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp makepkg -s --noconfirm --nosign
             echo "=== package contents ==="
             bsdtar -tf /tmp/p/*.pkg.tar.zst
           '
