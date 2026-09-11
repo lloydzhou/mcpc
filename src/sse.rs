@@ -4,7 +4,7 @@
 /// and dispatches complete events on empty lines.  Multiple `data:` lines
 /// are joined with newlines.
 pub struct SseParser {
-    line: String,
+    line: Vec<u8>,
     event: String,
     data: String,
     saw_field: bool,
@@ -16,7 +16,7 @@ pub struct SseParser {
 impl SseParser {
     pub fn new() -> Self {
         Self {
-            line: String::new(),
+            line: Vec::new(),
             event: String::new(),
             data: String::new(),
             saw_field: false,
@@ -49,7 +49,7 @@ impl SseParser {
                     self.skip_lf = true;
                 }
             } else {
-                self.line.push(b as char);
+                self.line.push(b);
             }
         }
     }
@@ -71,7 +71,11 @@ impl SseParser {
         if self.error {
             return;
         }
-        let line = std::mem::take(&mut self.line);
+        // Decode the raw byte line as UTF-8 at the line boundary.  Decoding
+        // per byte with `as char` would map 0x80..=0xFF to U+0080..=U+00FF
+        // (Latin-1), corrupting multi-byte UTF-8 payloads such as CJK text.
+        let bytes = std::mem::take(&mut self.line);
+        let line = String::from_utf8_lossy(&bytes).into_owned();
         if line.starts_with("event:") {
             self.event = line[6..].trim_start().to_string();
             self.saw_field = true;
@@ -133,5 +137,25 @@ mod tests {
         let mut p = SseParser::new();
         p.feed(b"event: msg\r\ndata: x\r\n\r\n");
         assert_eq!(p.take_event(), Some(("msg".into(), "x".into())));
+    }
+
+    #[test]
+    fn test_utf8_multibyte_payload() {
+        // CJK payload must survive as proper UTF-8, not Latin-1 mojibake.
+        let mut p = SseParser::new();
+        p.feed(b"data: {\"text\":\"\xe6\xb5\x8b\xe8\xaf\x95\"}\n\n");
+        let (event, data) = p.take_event().unwrap();
+        assert_eq!(event, "message");
+        assert_eq!(data, "{\"text\":\"\u{6d4b}\u{8bd5}\"}");
+    }
+
+    #[test]
+    fn test_utf8_split_across_feeds() {
+        // One multi-byte char split across two feed() calls must still decode.
+        let mut p = SseParser::new();
+        p.feed(b"data: \xe6\xb5");
+        p.feed(b"\x8b\n\n");
+        let (_, data) = p.take_event().unwrap();
+        assert_eq!(data, "\u{6d4b}");
     }
 }
