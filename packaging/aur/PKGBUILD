@@ -1,0 +1,27 @@
+# Maintainer: Lloyd <lloydzhou@qq.com>
+
+pkgname=mcpc
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="MCP client CLI with daemon-held sessions"
+arch=('x86_64' 'aarch64')
+url="https://github.com/lloydzhou/mcpc"
+license=('MIT')
+depends=('ca-certificates')
+makedepends=('cargo')
+conflicts=('mcpc-bin')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/lloydzhou/mcpc/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('27b2b17b31b9bba8091606766dad177103675fd7b7ee81862f9e5f9c757ad3d7')
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CARGO_TARGET_DIR=target
+  cargo build --release --locked
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 target/release/mcpc "${pkgdir}/usr/bin/mcpc"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

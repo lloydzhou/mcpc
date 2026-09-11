@@ -12,9 +12,15 @@ cargo install --path .
 brew install lloydzhou/tap/mcpc
 ```
 
+```bash
 # or via APT (Debian/Ubuntu; the repository is hosted alongside bash-agent)
 curl -fsSL https://lloydzhou.github.io/bash-agent/install.sh | sudo bash
 sudo apt-get install mcpc
+```
+
+```bash
+# or via AUR (Arch Linux; mcpc-bin for the prebuilt binary)
+yay -S mcpc
 ```
 
 ## Usage

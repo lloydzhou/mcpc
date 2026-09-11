@@ -1,0 +1,15 @@
+pkgbase = mcpc
+	pkgdesc = MCP client CLI with daemon-held sessions
+	pkgver = 0.1.1
+	pkgrel = 1
+	url = https://github.com/lloydzhou/mcpc
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	depends = ca-certificates
+	conflicts = mcpc-bin
+	source = mcpc-0.1.1.tar.gz::https://github.com/lloydzhou/mcpc/archive/refs/tags/v0.1.1.tar.gz
+	sha256sums = 27b2b17b31b9bba8091606766dad177103675fd7b7ee81862f9e5f9c757ad3d7
+
+pkgname = mcpc
