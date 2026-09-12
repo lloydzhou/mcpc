@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use rmcp::model::CallToolRequestParams;
-use rmcp::service::RunningService;
+use rmcp::model::{
+    CallToolRequestParams, ClientInfo, ClientRequest, CustomRequest, Implementation,
+    ServerResult,
+};
+use rmcp::service::{RunningService, ServiceError};
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
@@ -30,10 +33,13 @@ pub struct Session {
     /// Raw "K: V" header strings; persisted to the cache so the daemon can
     /// reconnect with the same Authorization after a restart.
     pub headers: Vec<String>,
+    /// User-pinned MCP protocol version (`--protocol-version`); sent in the
+    /// initialize request and persisted so daemon restarts keep it.
+    pub protocol_version: Option<String>,
     pub server_info_json: String,
     pub tools_json: String,
     pub dead: bool,
-    service: Option<RunningService<RoleClient, ()>>,
+    service: Option<RunningService<RoleClient, ClientInfo>>,
 }
 
 static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -72,13 +78,14 @@ impl Session {
         name: String,
         url: String,
         headers: Vec<String>,
-        _protocol_version: Option<String>,
+        protocol_version: Option<String>,
     ) -> Session {
         Session {
             name,
             transport: Transport::Http,
             source: url,
             headers,
+            protocol_version,
             server_info_json: String::new(),
             tools_json: String::new(),
             dead: false,
@@ -89,13 +96,14 @@ impl Session {
     pub fn new_stdio(
         name: String,
         cmd: String,
-        _protocol_version: Option<String>,
+        protocol_version: Option<String>,
     ) -> Session {
         Session {
             name,
             transport: Transport::Stdio,
             source: cmd,
             headers: Vec::new(),
+            protocol_version,
             server_info_json: String::new(),
             tools_json: String::new(),
             dead: false,
@@ -110,13 +118,25 @@ impl Session {
         let transport_kind = self.transport;
         let source = self.source.clone();
 
+        // ClientInfo doubles as the ClientHandler; its protocol_version lands
+        // verbatim in the initialize request params (`--protocol-version`).
+        let mut client_info = ClientInfo::default();
+        client_info.client_info = Implementation::from_build_env();
+        client_info.client_info.name = "mcpc".into();
+        client_info.client_info.version = env!("CARGO_PKG_VERSION").into();
+        if let Some(v) = &self.protocol_version {
+            client_info.protocol_version =
+                serde_json::from_value(Value::String(v.clone()))
+                    .map_err(|e| format!("invalid protocol version {:?}: {}", v, e))?;
+        }
+
         let service = rt().block_on(async move {
             match transport_kind {
                 Transport::Http => {
                     let config =
                         StreamableHttpClientTransportConfig::with_uri(source.clone())
                             .custom_headers(headers);
-                    ()
+                    client_info
                         .serve(StreamableHttpClientTransport::from_config(config))
                         .await
                         .map_err(|e| format!("initialize failed: {}", e))
@@ -126,7 +146,7 @@ impl Session {
                     command.arg("-c").arg(&source);
                     let transport = TokioChildProcess::new(command)
                         .map_err(|e| format!("spawn failed: {}", e))?;
-                    ()
+                    client_info
                         .serve(transport)
                         .await
                         .map_err(|e| format!("initialize failed: {}", e))
@@ -134,14 +154,34 @@ impl Session {
             }
         })?;
 
-        let tools = rt()
-            .block_on(service.list_tools(None))
-            .map_err(|e| format!("tools/list failed: {}", e))?;
+        // Prefer rmcp's typed tools/list (handles cursor pagination). Some
+        // servers emit loose tool objects (e.g. missing inputSchema) which
+        // fail strict deserialization ("Unexpected response type"); fall back
+        // to a raw request so their original JSON is passed through intact.
+        let tools_value = match rt().block_on(service.list_tools(None)) {
+            Ok(tools) => serde_json::to_value(&tools.tools).unwrap_or_else(|_| json!([])),
+            Err(ServiceError::UnexpectedResponse) => {
+                let req = ClientRequest::CustomRequest(CustomRequest::new(
+                    "tools/list",
+                    Some(json!({})),
+                ));
+                match rt().block_on(service.send_request(req)) {
+                    Ok(ServerResult::CustomResult(result)) => result
+                        .0
+                        .get("tools")
+                        .cloned()
+                        .unwrap_or_else(|| json!([])),
+                    Ok(_) => return Err("tools/list failed: unexpected response".into()),
+                    Err(e) => return Err(format!("tools/list failed: {}", e)),
+                }
+            }
+            Err(e) => return Err(format!("tools/list failed: {}", e)),
+        };
 
         if let Some(info) = service.peer_info() {
             self.server_info_json = serde_json::to_string(&*info).unwrap_or_default();
         }
-        self.tools_json = serde_json::to_string(&tools.tools).unwrap_or_else(|_| "[]".into());
+        self.tools_json = serde_json::to_string(&tools_value).unwrap_or_else(|_| "[]".into());
         self.service = Some(service);
         Ok(())
     }
@@ -174,7 +214,17 @@ impl Session {
             }
         };
         match rt().block_on(service.call_tool(request)) {
-            Ok(result) => Some(serde_json::to_string(&result).unwrap_or_else(|_| "{}".into())),
+            Ok(result) => {
+                let body = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
+                Some(format!(r#"{{"result":{}}}"#, body))
+            }
+            // JSON-RPC error from the server: surface the raw error object
+            // (code/message) like the old hand-rolled stack did. The session
+            // stays live — the server only rejected this one call.
+            Err(ServiceError::McpError(e)) => {
+                let body = serde_json::to_string(&e).unwrap_or_else(|_| "{}".into());
+                Some(format!(r#"{{"error":{}}}"#, body))
+            }
             Err(e) => {
                 self.dead = true;
                 eprintln!("mcpc: tools/call on @{} failed: {}", self.name, e);
@@ -204,6 +254,7 @@ impl Session {
             },
             "source": self.source,
             "headers": self.headers,
+            "protocol_version": self.protocol_version,
             "server_info": serde_json::from_str::<Value>(&self.server_info_json)
                 .unwrap_or(Value::Null),
             "tools": serde_json::from_str::<Value>(&self.tools_json)
@@ -322,11 +373,15 @@ pub fn restore_sessions(store: &SessionStore) {
                     .collect()
             })
             .unwrap_or_default();
+        let protocol_version = cache
+            .get("protocol_version")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let mut session = if let Some(cmd) = source.strip_prefix("cmd:") {
-            Session::new_stdio(name.clone(), cmd.to_string(), None)
+            Session::new_stdio(name.clone(), cmd.to_string(), protocol_version)
         } else {
-            Session::new_http(name.clone(), source.clone(), headers, None)
+            Session::new_http(name.clone(), source.clone(), headers, protocol_version)
         };
         if let Err(e) = session.handshake() {
             eprintln!("mcpc: restore @{} skipped: {}", name, e);

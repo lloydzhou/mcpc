@@ -74,7 +74,7 @@ assert_eq "tools-list" "$($MCPC @echo tools-list 2>&1 | tr -s ' ')" "echo echo b
 add add two numbers"
 assert_eq "tools-get" "$($MCPC @echo tools-get echo 2>&1 | grep -c '"name":"echo"')" "1"
 assert_eq "tools-call" "$($MCPC @echo tools-call echo msg:=42 2>&1)" '{"content":[{"type":"text","text":"echo-called"}],"isError":false}'
-assert_eq "tools-call-args" "$(grep -c '"method":"tools/call","params":{"name":"echo","arguments":{"msg":42}}' tests/mcpc-stdio.log)" "1"
+assert_eq "tools-call-args" "$(grep -c '"method":"tools/call".*"arguments":{"msg":42}' tests/mcpc-stdio.log)" "1"
 assert_eq "ping" "$($MCPC @echo ping 2>&1)" "pong @echo"
 rc=0; $MCPC @nosuch ping >/dev/null 2>&1 || rc=$?
 assert_eq "ping-missing" "$rc" "1"
@@ -89,7 +89,12 @@ rm -rf "$BA_HOME2"
 assert_eq "grep" "$($MCPC grep numbers 2>&1 | tr -s ' ')" "echo add"
 
 # JSON-RPC error surface
-assert_eq "error-surface" "$($MCPC @echo tools-call nope 2>&1; echo rc=$?)" '{"code":-32601,"message":"tool not found"}
+# (the `|| rc=$?` guard keeps `set -e` shells from aborting on the non-zero
+# exit inside the command substitution)
+es_rc=0
+es_out=$($MCPC @echo tools-call nope 2>&1) || es_rc=$?
+assert_eq "error-surface" "$es_out
+rc=$es_rc" '{"code":-32601,"message":"tool not found"}
 rc=1'
 
 # big tools/list
@@ -163,13 +168,16 @@ assert_eq "dead-session" "$($MCPC ls 2>&1 | grep -c '@doomed' || true)" "0"
 $MCPC connect cmd:"$PWD"/tests/echo-mcp.tmp.sh "@we\"ird" >/dev/null 2>&1
 assert_eq "quoted-name" "$($MCPC ls --json 2>&1 | grep -cF 'name":"we\"ird' || true)" "1"
 
-# socket removal self-heal
+# socket removal self-heal (restore_sessions brings @echo back live from cache;
+# hitting "already live" proves the new daemon restored sessions correctly)
 $MCPC connect cmd:"$PWD"/tests/echo-mcp.tmp.sh @base >/dev/null 2>&1
 rm -f "$BA_HOME/mcpc/daemon.sock"
-$MCPC ls >/dev/null 2>&1
-$MCPC connect cmd:"$PWD"/tests/echo-mcp.tmp.sh @echo >/dev/null 2>&1
+$MCPC ls >/dev/null 2>&1 || true
+conn=$($MCPC connect cmd:"$PWD"/tests/echo-mcp.tmp.sh @echo 2>&1) || true
 test "$(cat "$BA_HOME/mcpc/daemon.pid")" -gt 0 && ok=pidfile-ok || ok=pidfile-bad
-assert_eq "self-heal" "$ok" "pidfile-ok"
+assert_eq "self-heal" "$ok
+$conn" "pidfile-ok
+mcpc: connect @echo failed: session 'echo' already live"
 
 # close keeps cache
 assert_eq "close" "$($MCPC close @echo 2>&1; $MCPC @echo tools-list 2>&1 | head -1 | tr -s ' '; $MCPC @echo tools-call echo 2>&1 | grep -c 'no live session' || true)" "closed @echo
