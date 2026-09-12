@@ -60,6 +60,10 @@ pub fn run(store: Arc<SessionStore>) -> Result<(), String> {
 
     write_pid(&pid_path)?;
 
+    // Reconnect cached sessions (servers/*.json) so authenticated headers
+    // survive daemon restarts.
+    session::restore_sessions(&store);
+
     while !STOP.load(Ordering::Relaxed) {
         // Retire dead sessions before accepting a new command.
         store.gc_dead();
@@ -237,10 +241,7 @@ fn handle_request(line: &str, store: &SessionStore) -> String {
 
             let mut session = if target.starts_with("cmd:") {
                 let cmd = &target[4..];
-                match Session::new_stdio(name.clone(), cmd.to_string(), pver) {
-                    Ok(s) => s,
-                    Err(e) => return err(format!("spawn failed: {}", e)),
-                }
+                Session::new_stdio(name.clone(), cmd.to_string(), pver)
             } else {
                 let url = normalize_url(&target);
                 let headers: Vec<String> = header.map(|h| vec![h]).unwrap_or_default();

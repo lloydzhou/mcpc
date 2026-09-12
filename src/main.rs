@@ -1,10 +1,6 @@
 mod daemon;
-mod http_transport;
-mod jsonrpc;
 mod rpc;
 mod session;
-mod sse;
-mod stdio_transport;
 mod util;
 
 use serde_json::Value;
@@ -130,8 +126,8 @@ fn handle_connect(argv: &[String], _json_out: bool) {
     req.insert("op".to_string(), Value::String("connect".to_string()));
     req.insert("name".to_string(), Value::String(name.to_string()));
     req.insert("target".to_string(), Value::String(target.clone()));
-    if let Some(h) = header {
-        req.insert("header".to_string(), Value::String(h));
+    if let Some(h) = &header {
+        req.insert("header".to_string(), Value::String(h.clone()));
     }
     if let Some(v) = pver {
         req.insert("protocol_version".to_string(), Value::String(v));
@@ -162,12 +158,15 @@ fn handle_connect(argv: &[String], _json_out: bool) {
         process::exit(1);
     }
 
-    // Mirror the session cache locally.
+    // Mirror the session cache locally (keep headers so restarts can reconnect).
     if let Some(result) = parsed.get("result") {
         let transport = if target.starts_with("cmd:") { "stdio" } else { "http" };
         let mut cache = result.clone();
         cache["transport"] = Value::String(transport.to_string());
         cache["source"] = Value::String(target.clone());
+        if let Some(h) = &header {
+            cache["headers"] = Value::Array(vec![Value::String(h.clone())]);
+        }
         session::cache_save(name, &cache);
     }
     println!("connected @{}", name);
