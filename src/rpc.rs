@@ -16,7 +16,28 @@ fn dial() -> Option<UnixStream> {
     UnixStream::connect(path).ok()
 }
 
-fn daemon_pid() -> Option<u32> {
+/// Whether a daemon answers on the socket, without starting one.
+pub fn is_running() -> bool {
+    dial().is_some()
+}
+
+/// Wait until the daemon that served the socket before the restart is really
+/// gone: the pid file names it, and a new daemon may reuse the same socket path.
+pub fn wait_pid_gone(pid: Option<u32>, timeout_ms: u64) {
+    let pid = match pid {
+        Some(p) if p != std::process::id() => p,
+        _ => return,
+    };
+    let start = Instant::now();
+    while (start.elapsed().as_millis() as u64) < timeout_ms {
+        if !util::process_exists(pid) || daemon_pid() != Some(pid) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+pub fn daemon_pid() -> Option<u32> {
     let text = util::read_file(util::pid_path()).ok()?;
     text.trim().parse::<u32>().ok()
 }
