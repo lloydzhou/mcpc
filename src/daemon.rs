@@ -60,9 +60,13 @@ pub fn run(store: Arc<SessionStore>) -> Result<(), String> {
 
     write_pid(&pid_path)?;
 
-    // Reconnect cached sessions (servers/*.json) so authenticated headers
-    // survive daemon restarts.
-    session::restore_sessions(&store);
+    // Reconnect cached sessions (servers/*.json) on a worker thread, so the
+    // accept loop answers commands while a slow server is being dialled. A
+    // handshake that stalls must never make the daemon look dead.
+    {
+        let restore_store = Arc::clone(&store);
+        thread::spawn(move || session::restore_sessions(&restore_store));
+    }
 
     while !STOP.load(Ordering::Relaxed) {
         // Retire dead sessions before accepting a new command.
