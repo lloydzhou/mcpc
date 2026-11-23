@@ -14,6 +14,7 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
+use crate::creds;
 use crate::util;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -253,9 +254,12 @@ impl Session {
         }
     }
 
-    /// Cache JSON persisted to `servers/{name}.json`. Headers are included so
-    /// the daemon can restore authenticated sessions after a restart.
+    /// Cache JSON persisted to `servers/{name}.json`. Sensitive header values
+    /// are replaced by a reference; the real value goes to the owner-only
+    /// credential store so the cache file itself carries no secret.
     pub fn cache_json(&self) -> Value {
+        let (headers, _) = creds::redact(&self.headers);
+        creds::store(&self.name, &self.headers);
         json!({
             "name": self.name,
             "transport": match self.transport {
@@ -263,7 +267,7 @@ impl Session {
                 Transport::Stdio => "stdio",
             },
             "source": self.source,
-            "headers": self.headers,
+            "headers": headers,
             "protocol_version": self.protocol_version,
             "server_info": serde_json::from_str::<Value>(&self.server_info_json)
                 .unwrap_or(Value::Null),
@@ -383,6 +387,14 @@ pub fn restore_sessions(store: &SessionStore) {
                     .collect()
             })
             .unwrap_or_default();
+        let (headers, problem) = creds::resolve(&name, headers);
+        if let Some(problem) = problem {
+            // Never hand a reference marker to the server as if it were a
+            // credential: skip the session and keep the cache for a later
+            // `connect` once the record is fixed.
+            eprintln!("mcpc: restore @{} skipped: {}", name, problem);
+            continue;
+        }
         let protocol_version = cache
             .get("protocol_version")
             .and_then(|v| v.as_str())
