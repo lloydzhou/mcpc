@@ -71,8 +71,14 @@ class Handler(BaseHTTPRequestHandler):
         if proc.returncode != 0:
             self.send_error(500, proc.stderr.decode("utf-8", "replace"))
             return
-        out = proc.stdout.decode("utf-8", "replace")
-        lines = out.splitlines()
+        # Split headers from body at the first blank line, then forward the
+        # body verbatim: gzip-compressed CGI output must not be re-encoded.
+        sep = proc.stdout.find(b"\n\n")
+        if sep < 0:
+            head, body_bytes = proc.stdout, b""
+        else:
+            head, body_bytes = proc.stdout[:sep], proc.stdout[sep + 2:]
+        lines = [l.decode("utf-8", "replace") for l in head.splitlines()]
         i = 0
         status = 200
         content_type = "application/json"
@@ -86,9 +92,6 @@ class Handler(BaseHTTPRequestHandler):
             elif ":" in lines[i]:
                 extra_headers.append(lines[i].split(":", 1))
             i += 1
-        body_lines = lines[i + 1:]
-        body_out = "\n".join(body_lines) + ("\n" if body_lines else "")
-        body_bytes = body_out.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body_bytes)))

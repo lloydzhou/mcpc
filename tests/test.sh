@@ -196,6 +196,7 @@ mkdir -p "$WEB/cgi-bin"
 cp tests/http_cgi_mcp.cgi "$WEB/cgi-bin/mcp.cgi"
 cp tests/http_cgi_mcp500.cgi "$WEB/cgi-bin/mcp500.cgi"
 cp tests/http_cgi_mcpsse.cgi "$WEB/cgi-bin/mcpsse.cgi"
+cp tests/http_cgi_mcpgzip.cgi "$WEB/cgi-bin/mcpgzip.cgi"
 chmod +x "$WEB/cgi-bin/"*
 python3 tests/http_server.py "$WEB" "$PORT" --daemon
 for _ in $(seq 1 2400); do
@@ -217,6 +218,12 @@ assert_eq "http-500-notification" "$($MCPC connect http://127.0.0.1:$PORT/cgi-bi
 rc=0"
 assert_eq "sse-connect" "$($MCPC connect http://127.0.0.1:$PORT/cgi-bin/mcpsse.cgi @sse 2>&1)" "connected @sse"
 assert_eq "sse-call" "$($MCPC @sse tools-call sse_tool 2>&1)" '{"content":[{"type":"text","text":"sse-result"}]}'
+# gzip: the server gzips only when Accept-Encoding asks for it, and echoes
+# that header into the tool description, so this covers both the advertised
+# header and decompression of a real gzip response.
+assert_eq "gzip-connect" "$($MCPC connect http://127.0.0.1:$PORT/cgi-bin/mcpgzip.cgi @gzip 2>&1)" "connected @gzip"
+assert_eq "gzip-accept-encoding" "$($MCPC @gzip tools-list 2>&1 | awk '{print $2}')" "gz:gzip"
+assert_eq "gzip-call" "$($MCPC @gzip tools-call gz_tool 2>&1)" '{"content":[{"type":"text","text":"gz-text"}],"isError":false}'
 
 HTTPD_PID=$(cat "$WEB/httpd.pid" 2>/dev/null || echo "")
 kill "$HTTPD_PID" 2>/dev/null || true
