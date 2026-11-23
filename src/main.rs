@@ -9,12 +9,13 @@ use std::env;
 use std::process;
 
 const USAGE: &str = "Usage: mcpc connect URL|cmd:CMD [@SESSION] [-H HDR] [--protocol-version V]
-       mcpc ls | close @SESSION | daemon stop | grep PATTERN
+       mcpc ls | close @SESSION | grep PATTERN
        mcpc @SESSION COMMAND [ARGS]
+       mcpc daemon run|start|stop|restart|status
 
 Session commands: tools-list [--full], tools-get TOOL, tools-call TOOL [K=V|K:=JSON...], ping
 
-Global flags: --json  --insecure  --timeout N";
+Global flags: --json  --insecure  --timeout N (seconds)";
 
 fn usage_err(msg: &str) -> ! {
     eprintln!("mcpc: {}", msg);
@@ -24,7 +25,7 @@ fn usage_err(msg: &str) -> ! {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let (argv, json_out, _insecure, _timeout) = strip_global_flags(&args);
+    let (argv, json_out, _insecure, timeout) = strip_global_flags(&args);
 
     if argv.len() < 2 {
         usage_err("missing command");
@@ -33,7 +34,7 @@ fn main() {
     let cmd = argv[1].clone();
     match cmd.as_str() {
         "daemon" => handle_daemon(&argv),
-        "connect" => handle_connect(&argv, json_out),
+        "connect" => handle_connect(&argv, json_out, timeout),
         "ls" => handle_ls(json_out),
         "close" => handle_close(&argv),
         "grep" => handle_grep(&argv),
@@ -144,7 +145,7 @@ fn print_daemon_status() {
     }
 }
 
-fn handle_connect(argv: &[String], _json_out: bool) {
+fn handle_connect(argv: &[String], _json_out: bool, timeout: Option<u64>) {
     if argv.len() < 3 {
         usage_err("usage: mcpc connect URL|cmd:CMD [@NAME] [-H HEADER] [--protocol-version VER]");
     }
@@ -185,7 +186,10 @@ fn handle_connect(argv: &[String], _json_out: bool) {
         req.insert("protocol_version".to_string(), Value::String(v));
     }
 
-    let resp = match rpc::rpc(&Value::Object(req).to_string()) {
+    let resp = match match timeout {
+        Some(secs) => rpc::rpc_with_timeout(&Value::Object(req).to_string(), secs * 1000),
+        None => rpc::rpc(&Value::Object(req).to_string()),
+    } {
         Some(r) => r,
         None => {
             eprintln!("mcpc: connect @{} failed: cannot reach daemon", name);

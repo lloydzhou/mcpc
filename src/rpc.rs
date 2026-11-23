@@ -1,6 +1,6 @@
 use crate::util;
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -8,8 +8,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DAEMON_START_MS: u64 = 5_000;
-const CLIENT_TIMEOUT_MS: u64 = 30_000;
-const MAX_LINE: usize = 4 * 1024 * 1024;
+/// Default deadline for one daemon round trip. A slow MCP server can spend
+/// minutes inside a single tools/list, so this is generous; a stuck daemon
+/// still returns control instead of hanging the shell forever.
+const CLIENT_TIMEOUT_MS: u64 = 600_000;
+// A sessions cache with a large tool list runs to tens of MB; the daemon
+// writes it on one line, so the reader must accept it.
+const MAX_LINE: usize = 256 * 1024 * 1024;
+const POLL_READ_MS: u64 = 1_000;
 
 fn dial() -> Option<UnixStream> {
     let path = util::socket_path();
@@ -105,6 +111,11 @@ unsafe fn close_fds_from(first: libc::c_int) {
 
 /// Send one line JSON request to the daemon and return the response line.
 pub fn rpc(line: &str) -> Option<String> {
+    rpc_with_timeout(line, CLIENT_TIMEOUT_MS)
+}
+
+/// Same as `rpc`, with an explicit deadline in milliseconds.
+pub fn rpc_with_timeout(line: &str, timeout_ms: u64) -> Option<String> {
     let mut stream = match dial() {
         Some(s) => s,
         None => {
@@ -117,27 +128,44 @@ pub fn rpc(line: &str) -> Option<String> {
     stream.write_all(b"\n").ok()?;
     stream.flush().ok()?;
 
+    // A read timeout makes the socket return WouldBlock instead of blocking
+    // forever, so the deadline below is enforced: a daemon stuck in a slow
+    // handshake can no longer hang every client command indefinitely.
+    stream
+        .set_read_timeout(Some(Duration::from_millis(POLL_READ_MS)))
+        .ok()?;
+
     let mut reader = BufReader::new(stream);
     let start = Instant::now();
-    let mut line = String::new();
+    // Read in chunks: read_line() would discard a partial line when the read
+    // timeout fires, losing an already-started large response. Bytes are
+    // accumulated first so a multi-byte character split across two chunks is
+    // decoded whole when the line completes.
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 64 * 1024];
     loop {
-        match reader.read_line(&mut line) {
+        match reader.read(&mut buf) {
             Ok(0) => return None,
-            Ok(_) => {
-                while line.ends_with('\n') || line.ends_with('\r') {
-                    line.pop();
-                }
-                if line.len() > MAX_LINE {
+            Ok(n) => {
+                raw.extend_from_slice(&buf[..n]);
+                if raw.len() > MAX_LINE {
                     return None;
                 }
-                return Some(line);
+                if let Some(pos) = raw.iter().position(|b| *b == b'\n') {
+                    let mut end = pos;
+                    if end > 0 && raw[end - 1] == b'\r' {
+                        end -= 1;
+                    }
+                    let line = String::from_utf8(raw[..end].to_vec()).ok()?;
+                    return Some(line);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed().as_millis() as u64 >= CLIENT_TIMEOUT_MS {
+                if start.elapsed().as_millis() as u64 >= timeout_ms {
                     return None;
                 }
-                thread::sleep(Duration::from_millis(50));
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return None,
         }
     }
