@@ -79,6 +79,17 @@ assert_eq "ping" "$($MCPC @echo ping 2>&1)" "pong @echo"
 rc=0; $MCPC @nosuch ping >/dev/null 2>&1 || rc=$?
 assert_eq "ping-missing" "$rc" "1"
 
+# daemon lifecycle: status probes without starting; start/restart are explicit.
+# Runs here, before the BA_HOME2 daemon below exists, so "stopped" is real.
+assert_eq "daemon-status-stopped" "$(set +e; $MCPC daemon stop >/dev/null 2>&1; $MCPC daemon status 2>&1; echo rc=$?; ls "$BA_HOME/mcpc/daemon.sock" 2>&1 | grep -c 'No such' || true)" "daemon: stopped (pid -, 0 sessions)
+rc=3
+1"
+assert_eq "daemon-start" "$($MCPC daemon start 2>&1; $MCPC daemon status 2>&1 | sed -E 's/pid [0-9]+/pid N/; s/[0-9]+ sessions?/SESSIONS/')" "daemon started
+daemon: running (pid N, SESSIONS)"
+assert_eq "daemon-restart" "$($MCPC daemon restart 2>&1; $MCPC daemon status 2>&1 | sed -E 's/pid [0-9]+/pid N/; s/[0-9]+ sessions?/SESSIONS/')" "daemon restarted
+daemon: running (pid N, SESSIONS)"
+$MCPC daemon stop >/dev/null 2>&1 || true
+
 # protocol version flag
 BA_HOME2="$PWD/tests/mc2.home"
 assert_eq "protocol-version" "$(BA_HOME=$BA_HOME2 $MCPC connect cmd:"$PWD"/tests/echo-mcp.tmp.sh @old --protocol-version 2024-11-05 2>&1; grep -c '"protocolVersion":"2024-11-05"' tests/mcpc-stdio.log)" "connected @old
@@ -224,6 +235,28 @@ assert_eq "sse-call" "$($MCPC @sse tools-call sse_tool 2>&1)" '{"content":[{"typ
 assert_eq "gzip-connect" "$($MCPC connect http://127.0.0.1:$PORT/cgi-bin/mcpgzip.cgi @gzip 2>&1)" "connected @gzip"
 assert_eq "gzip-accept-encoding" "$($MCPC @gzip tools-list 2>&1 | awk '{print $2}')" "gz:gzip"
 assert_eq "gzip-call" "$($MCPC @gzip tools-call gz_tool 2>&1)" '{"content":[{"type":"text","text":"gz-text"}],"isError":false}'
+
+# credentials: a sensitive header never lands in servers/*.json; the value goes
+# to an owner-only record that survives a daemon restart.
+CRED_HOME="$BA_HOME/mcpc"
+$MCPC connect http://127.0.0.1:$PORT/cgi-bin/mcp.cgi @cred -H "Authorization: Bearer s3cr3t-value" >/dev/null 2>&1
+assert_eq "cred-not-in-cache" "$(grep -c 's3cr3t-value' "$CRED_HOME/servers/cred.json" 2>/dev/null || true)" "0"
+assert_eq "cred-ref-in-cache" "$(grep -c '<stored>' "$CRED_HOME/servers/cred.json" 2>/dev/null || true)" "1"
+assert_eq "cred-store-mode" "$(ls -l "$CRED_HOME/credentials/cred.json" | cut -c1-10)" "-rw-------"
+assert_eq "cred-store-dir-mode" "$(ls -ld "$CRED_HOME/credentials" | cut -c1-10)" "drwx------"
+assert_eq "cred-restored-after-restart" "$($MCPC daemon restart >/dev/null 2>&1; $MCPC @cred tools-call web_search q=x 2>&1)" '{"content":[{"type":"text","text":"web-result"}]}'
+# a record readable by other users is refused, not served silently. The
+# refusal happens in the daemon, so assert on the session not coming back.
+chmod 644 "$CRED_HOME/credentials/cred.json"
+assert_eq "cred-refused-when-world-readable" "$($MCPC daemon restart >/dev/null 2>&1; $MCPC @cred tools-call web_search q=x 2>&1 | grep -c 'no live session' || true)" "1"
+chmod 600 "$CRED_HOME/credentials/cred.json"
+# close drops the credential but keeps the cache file (restore it first: the
+# refused restart above left the session down).
+$MCPC daemon restart >/dev/null 2>&1
+$MCPC close @cred >/dev/null 2>&1 || true
+assert_eq "cred-dropped-on-close" "$(if [ -f "$CRED_HOME/credentials/cred.json" ]; then echo present; else echo gone; fi
+if [ -f "$CRED_HOME/servers/cred.json" ]; then echo cache-kept; fi)" "gone
+cache-kept"
 
 HTTPD_PID=$(cat "$WEB/httpd.pid" 2>/dev/null || echo "")
 kill "$HTTPD_PID" 2>/dev/null || true

@@ -268,6 +268,9 @@ fn handle_request(line: &str, store: &SessionStore) -> String {
                 None => return err("missing name"),
             };
             if store.remove(name) {
+                // The session is gone; so is the credential it needed. The
+                // cache file stays so tools-list / tools-get still work offline.
+                crate::creds::forget(name);
                 ok(Value::Object(Default::default()))
             } else {
                 err(format!("no such session: {}", name))

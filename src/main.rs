@@ -1,3 +1,4 @@
+mod creds;
 mod daemon;
 mod rpc;
 mod session;
@@ -69,9 +70,11 @@ fn strip_global_flags(args: &[String]) -> (Vec<String>, bool, bool, Option<u64>)
     (out, json_out, insecure, timeout)
 }
 
+const DAEMON_USAGE: &str = "usage: mcpc daemon run|stop|start|restart|status";
+
 fn handle_daemon(argv: &[String]) {
     if argv.len() < 3 {
-        usage_err("usage: mcpc daemon run|stop");
+        usage_err(DAEMON_USAGE);
     }
     match argv[2].as_str() {
         "run" => {
@@ -88,7 +91,56 @@ fn handle_daemon(argv: &[String]) {
                 process::exit(1);
             }
         },
-        _ => usage_err("usage: mcpc daemon run|stop"),
+        "start" => match rpc::ensure_daemon() {
+            Ok(()) => println!("daemon started"),
+            Err(e) => {
+                eprintln!("mcpc: start failed: {}", e);
+                process::exit(1);
+            }
+        },
+        "restart" => {
+            // Capture the outgoing daemon before asking it to stop: its pid file
+            // is removed on shutdown, and the replacement may reuse the socket.
+            let old_pid = rpc::daemon_pid();
+            if rpc::rpc(r#"{"op":"stop"}"#).is_some() {
+                rpc::wait_pid_gone(old_pid, 5_000);
+            }
+            match rpc::ensure_daemon() {
+                Ok(()) => println!("daemon restarted"),
+                Err(e) => {
+                    eprintln!("mcpc: restart failed: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "status" => print_daemon_status(),
+        _ => usage_err(DAEMON_USAGE),
+    }
+}
+
+fn print_daemon_status() {
+    // Probe only: status must never start a daemon as a side effect.
+    let resp = if rpc::is_running() {
+        rpc::rpc(r#"{"op":"list"}"#)
+    } else {
+        None
+    };
+    let live = resp.is_some();
+    let count = resp
+        .as_deref()
+        .and_then(|r| serde_json::from_str::<Value>(r).ok())
+        .and_then(|v| v.get("result").and_then(|r| r.as_array().map(|a| a.len())))
+        .unwrap_or(0);
+    let pid = rpc::daemon_pid().map(|p| p.to_string());
+    println!(
+        "daemon: {} (pid {}, {} session{})",
+        if live { "running" } else { "stopped" },
+        if live { pid.as_deref().unwrap_or("-") } else { "-" },
+        count,
+        if count == 1 { "" } else { "s" }
+    );
+    if !live {
+        process::exit(3);
     }
 }
 
@@ -158,14 +210,17 @@ fn handle_connect(argv: &[String], _json_out: bool) {
         process::exit(1);
     }
 
-    // Mirror the session cache locally (keep headers so restarts can reconnect).
+    // Mirror the session cache locally (headers land in the credential store).
     if let Some(result) = parsed.get("result") {
         let transport = if target.starts_with("cmd:") { "stdio" } else { "http" };
         let mut cache = result.clone();
         cache["transport"] = Value::String(transport.to_string());
         cache["source"] = Value::String(target.clone());
         if let Some(h) = &header {
-            cache["headers"] = Value::Array(vec![Value::String(h.clone())]);
+            cache["headers"] = Value::Array(vec![Value::String(
+                creds::redact(std::slice::from_ref(h)).0[0].clone(),
+            )]);
+            creds::store(name, std::slice::from_ref(h));
         }
         session::cache_save(name, &cache);
     }
