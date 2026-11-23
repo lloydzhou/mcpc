@@ -133,11 +133,21 @@ impl Session {
         let service = rt().block_on(async move {
             match transport_kind {
                 Transport::Http => {
+                    // rmcp's default client disables the idle pool, so every
+                    // request opened a new TCP+TLS connection. Keep its
+                    // no-redirect policy; reuse connections across requests.
+                    let http_client = reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .map_err(|e| format!("http client: {}", e))?;
                     let config =
                         StreamableHttpClientTransportConfig::with_uri(source.clone())
                             .custom_headers(headers);
                     client_info
-                        .serve(StreamableHttpClientTransport::from_config(config))
+                        .serve(StreamableHttpClientTransport::with_client(
+                            http_client,
+                            config,
+                        ))
                         .await
                         .map_err(|e| format!("initialize failed: {}", e))
                 }
